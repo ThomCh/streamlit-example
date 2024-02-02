@@ -1,130 +1,71 @@
-import calendar
-import datetime
-from datetime import datetime, timedelta
-from pathlib import Path
-from time import sleep
+import inspect
+import textwrap
 
-import numpy as np
-import pandas as pd
-import plotly_express as px
 import streamlit as st
-from sklearn.ensemble import RandomForestRegressor
+
+from demo_echarts import ST_DEMOS
+from demo_pyecharts import ST_PY_DEMOS
 
 
-# %%
-@st.cache
-def load_data():
-    bikes_data_url = 'https://gist.githubusercontent.com/AurelienMassiot/b3070dab9e31dd119242648b4d27c9b4/raw/e35965ebe409d31fcfe59d5574e33641a2b43728/bike_sharing_demand_train.csv'
-    data = pd.read_csv(bikes_data_url)
-    return data
+def main():
+    st.title("Streamlit ECharts Demo")
+
+    with st.sidebar:
+        st.header("Configuration")
+        api_options = ("echarts", "pyecharts")
+        selected_api = st.selectbox(
+            label="Choose your preferred API:",
+            options=api_options,
+        )
+
+        page_options = (
+            list(ST_PY_DEMOS.keys())
+            if selected_api == "pyecharts"
+            else list(ST_DEMOS.keys())
+        )
+        selected_page = st.selectbox(
+            label="Choose an example",
+            options=page_options,
+        )
+        demo, url = (
+            ST_DEMOS[selected_page]
+            if selected_api == "echarts"
+            else ST_PY_DEMOS[selected_page]
+        )
+
+        if selected_api == "echarts":
+            st.caption(
+                """ECharts demos are extracted from https://echarts.apache.org/examples/en/index.html, 
+            by copying/formattting the 'option' json object into st_echarts.
+            Definitely check the echarts example page, convert the JSON specs to Python Dicts and you should get a nice viz."""
+            )
+        if selected_api == "pyecharts":
+            st.caption(
+                """Pyecharts demos are extracted from https://github.com/pyecharts/pyecharts-gallery,
+            by copying the pyecharts object into st_pyecharts. 
+            Pyecharts is still using ECharts 4 underneath, which is why the theming between st_echarts and st_pyecharts is different."""
+            )
+
+    demo()
+
+    sourcelines, _ = inspect.getsourcelines(demo)
+    with st.expander("Source Code"):
+        st.code(textwrap.dedent("".join(sourcelines[1:])))
+    st.markdown(f"Credit: {url}")
 
 
-def preprocess_data(dataframe):
-    dataframe['date'] = dataframe['datetime'].apply(lambda x: x.split()[0])
-    dataframe['hour'] = dataframe['datetime'].apply(lambda x: x.split()[1].split(':')[0])
-    dataframe['weekday'] = dataframe['date'].apply(
-        lambda date_string: calendar.day_name[datetime.strptime(date_string, '%Y-%m-%d').weekday()])
-    dataframe['month'] = dataframe['date'].apply(
-        lambda date_string: calendar.month_name[datetime.strptime(date_string, '%Y-%m-%d').month])
-    dataframe['season'] = dataframe['season'].map({1: 'Spring', 2: 'Summer', 3: 'Fall', 4: 'Winter'})
-    return dataframe
-
-
-st.title('Bike Sharing demand')
-df = load_data()
-df_preprocessed = preprocess_data(df.copy())
-st.write(df_preprocessed)
-
-st.title('Data exploration')
-# %% barplots
-st.subheader('Barplots')
-mean_counts_by_hour = pd.DataFrame(df_preprocessed.groupby(['hour', 'season'], sort=True)['count'].mean()).reset_index()
-fig1 = px.bar(mean_counts_by_hour, x='hour', y='count', color='season', height=400)
-barplot_chart = st.write(fig1)
-
-# %% timeseries
-st.subheader('Timeseries')
-df_preprocessed['datetime'] = pd.to_datetime(df_preprocessed['datetime'])
-fig2 = px.line(df_preprocessed, x='datetime', y='temp')
-ts_chart = st.plotly_chart(fig2)
-
-# %% boxplots
-st.subheader('Boxplots')
-categories_count = ['casual', 'registered', 'count']
-chosen_count = st.sidebar.selectbox(
-    'Which counts for boxplots?',
-    categories_count
-)
-
-fig3 = px.box(df_preprocessed, x='weekday', y=chosen_count, color='season', notched=True)
-boxplot_chart = st.plotly_chart(fig3)
-
-st.title('Modelization')
-
-# %% Modelization
-X = df_preprocessed[['temp', 'humidity']]
-y = df_preprocessed['count']
-model_rf = RandomForestRegressor(max_depth=2, n_estimators=10)
-model_rf.fit(X, y)
-
-
-# %% Online timeseries
-
-def generate_new_row(df):
-    time_end_new_data = df['datetime'].max() + timedelta(hours=1)
-    random_number_temp = np.random.uniform(df['temp'].min(), df['temp'].max(),
-                                           size=(1), )
-    random_number_humidity = np.random.uniform(df['humidity'].min(), df['humidity'].max(),
-                                               size=(1), )
-    new_df = pd.DataFrame({'datetime': [time_end_new_data],
-                           'temp': random_number_temp,
-                           'humidity': random_number_humidity,
-                           'predicted': [True]})
-    return new_df
-
-
-def add_row(df, new_row_df):
-    return pd.concat([df, new_row_df], axis=0).reset_index(drop=True)
-
-
-def generate_new_prediction(df, row, model):
-    time_end_new_data = df['datetime'].max() + timedelta(hours=1)
-    X_pred = row[['temp', 'humidity']]
-    y_pred = model.predict(X_pred)
-    new_df = pd.DataFrame({'datetime': [time_end_new_data],
-                           'count': y_pred,
-                           'predicted': [True]})
-    return new_df
-
-
-def animate(df, column, chart):
-    fig = px.line(df, x='datetime', y=column, color='predicted')
-    chart.plotly_chart(fig)
-
-
-n_rows_to_display = 50
-df_for_predictions = df_preprocessed.copy()
-df_for_predictions['predicted'] = False
-fig = px.line(df_for_predictions.tail(n_rows_to_display), x='datetime', y='count', color='predicted')
-online_ts_chart = st.plotly_chart(fig)
-new_row_info = st.empty()
-predicted_row_warning = st.empty()
-
-if st.sidebar.checkbox('Stream and predict on new data'):
-    bar = st.progress(0)
-    for i in range(11):
-        # get new row
-        new_row = generate_new_row(df_for_predictions)
-        new_row_info.info(f'Received new values: \n'
-                          f'temperature={np.round(new_row["temp"].values[0], 2)} - \n'
-                          f'humidity={np.round(new_row["humidity"].values[0], 2)} \n')
-        # predict
-        new_prediction = generate_new_prediction(df_for_predictions, new_row, model_rf)
-        predicted_row_warning.warning(f'Predicted count: {np.round(new_prediction["count"].values[0], 2)}')
-        # concatenate predicted row
-        df_for_predictions = add_row(df_for_predictions, new_prediction)
-        # animate
-        animate(df_for_predictions.tail(n_rows_to_display), 'count', online_ts_chart)
-        bar.progress(i * 10)
-        # wait
-        sleep(0.1)
+if __name__ == "__main__":
+    st.set_page_config(
+        page_title="Streamlit ECharts Demo", page_icon=":chart_with_upwards_trend:"
+    )
+    main()
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown(
+            '<h6>Made in &nbsp<img src="https://streamlit.io/images/brand/streamlit-mark-color.png" alt="Streamlit logo" height="16">&nbsp by <a href="https://twitter.com/andfanilo">@andfanilo</a></h6>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div style="margin-top: 0.75em;"><a href="https://www.buymeacoffee.com/andfanilo" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a></div>',
+            unsafe_allow_html=True,
+        )
